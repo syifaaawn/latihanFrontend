@@ -4,11 +4,11 @@ import api from '../services/api';
 import toast from 'react-hot-toast';
 
 const formatRupiah = (number) =>
-new Intl.NumberFormat('id-ID', {
-  style: 'currency',
-  currency: 'IDR',
-  minimumFractionDigits: 0,
-}).format(number || 0);
+  new Intl.NumberFormat('id-ID', {
+    style: 'currency',
+    currency: 'IDR',
+    minimumFractionDigits: 0,
+  }).format(number || 0);
 
 const STATUS_LABEL = {
   pending: { text: 'Pending', cls: 'bg-yellow-100 text-yellow-700' },
@@ -16,7 +16,7 @@ const STATUS_LABEL = {
   dibatalkan: { text: 'Dibatalkan', cls: 'bg-red-100 text-red-700' },
 };
 
-// —- Modal: Tambah Pembelian ———————————————————————————————————————————
+// ─── Modal: Tambah Pembelian ────────────────────────────────────────────────
 function TambahPembelianModal({ onClose, onSuccess }) {
   const [suppliers, setSuppliers] = useState([]);
   const [produks, setProduks] = useState([]);
@@ -25,7 +25,8 @@ function TambahPembelianModal({ onClose, onSuccess }) {
     tanggal_pembelian: new Date().toISOString().split('T')[0],
     keterangan: '',
   });
-  const [items, setItems] = useState([{ produk_id: '', quantity: 1, harga_beli: '' }]);
+  const emptyItem = () => ({ produk_id: '', quantity: 1, harga_beli: '', isNew: false, new_produk: { kode_barang: '', nama_barang: '', kategori: '', harga: '' } });
+  const [items, setItems] = useState([emptyItem()]);
   const [loading, setLoading] = useState(false);
   const [errors, setErrors] = useState({});
 
@@ -35,29 +36,50 @@ function TambahPembelianModal({ onClose, onSuccess }) {
   const [savingSupplier, setSavingSupplier] = useState(false);
 
   useEffect(() => {
-    Promise.all([api.get('/suppliers'), api.get('/produks')]).then(([sRes, pRes]) => {
-      setSuppliers(sRes.data.data || []);
-      let pData = pRes.data;
-      if (pData.data) pData = pData.data;
-      setProduks(Array.isArray(pData) ? pData : []);
-    });
+    const loadData = async () => {
+      try {
+        const pRes = await api.get('/produks');
+        let pData = pRes.data;
+        if (pData.data) pData = pData.data;
+        setProduks(Array.isArray(pData) ? pData : []);
+      } catch {
+        toast.error('Gagal mengambil data produk');
+      }
+
+      try {
+        const sRes = await api.get('/suppliers');
+        setSuppliers(sRes.data.data || []);
+      } catch {
+        // suppliers belum ada, tidak apa-apa
+      }
+    };
+
+    loadData();
   }, []);
 
-  // PERBAIKAN 1: Menghapus double arrow function
-  const addItem = () =>
-    setItems([...items, { produk_id: '', quantity: 1, harga_beli: '' }]);
+  const addItem = () => setItems([...items, emptyItem()]);
 
-  const removeItem = (idx) =>
-    setItems(items.filter((_, i) => i !== idx));
+  const removeItem = (idx) => setItems(items.filter((_, i) => i !== idx));
 
   const updateItem = (idx, field, value) => {
     const updated = [...items];
-    updated[idx] = { ...updated[idx], [field]: value };
 
-    // Auto-fill harga dari data produk jika pilih produk
-    if (field === 'produk_id' && value) {
-      const produk = produks.find((p) => String(p.id) === String(value));
-      if (produk) updated[idx].harga_beli = produk.harga;
+    if (field === 'produk_id') {
+      if (value === '__new__') {
+        updated[idx] = { ...updated[idx], produk_id: '__new__', isNew: true, harga_beli: '' };
+      } else {
+        updated[idx] = { ...updated[idx], produk_id: value, isNew: false };
+        const produk = produks.find((p) => String(p.id) === String(value));
+        if (produk) updated[idx].harga_beli = produk.harga;
+      }
+    } else if (field.startsWith('new_produk.')) {
+      const subField = field.replace('new_produk.', '');
+      updated[idx] = { ...updated[idx], new_produk: { ...updated[idx].new_produk, [subField]: value } };
+      if (subField === 'harga' && !updated[idx].harga_beli) {
+        updated[idx].harga_beli = value;
+      }
+    } else {
+      updated[idx] = { ...updated[idx], [field]: value };
     }
 
     setItems(updated);
@@ -82,7 +104,7 @@ function TambahPembelianModal({ onClose, onSuccess }) {
       setShowAddSupplier(false);
       setSupplierForm({ nama: '', no_hp: '', email: '', alamat: '' });
       toast.success('Supplier berhasil ditambahkan!');
-    } catch (err) {
+    } catch {
       toast.error('Gagal menambah supplier');
     } finally {
       setSavingSupplier(false);
@@ -95,19 +117,32 @@ function TambahPembelianModal({ onClose, onSuccess }) {
       setErrors({ supplier_id: ['Supplier wajib dipilih'] });
       return;
     }
-    const validItems = items.filter((i) => i.produk_id && i.quantity > 0 && i.harga_beli >= 0);
+
+    const validItems = items.filter((i) =>
+      (i.isNew ? i.new_produk?.nama_barang?.trim() : i.produk_id) && i.quantity > 0
+    );
     if (validItems.length === 0) {
       toast.error('Tambahkan minimal 1 produk');
       return;
     }
+
     setLoading(true);
     try {
       const res = await api.post('/pembelians', {
         ...form,
         items: validItems.map((i) => ({
-          produk_id: parseInt(i.produk_id),
+          produk_id: i.isNew ? null : parseInt(i.produk_id),
           quantity: parseInt(i.quantity),
-          harga_beli: parseFloat(i.harga_beli),
+          harga_beli: parseFloat(i.harga_beli) || 0,
+          ...(i.isNew && {
+            new_produk: {
+              kode_barang: i.new_produk.kode_barang || '',
+              nama_barang: i.new_produk.nama_barang,
+              kategori: i.new_produk.kategori || '',
+              harga: parseFloat(i.new_produk.harga) || parseFloat(i.harga_beli) || 0,
+              stok: 0,
+            },
+          }),
         })),
       });
       toast.success('Pembelian berhasil dibuat!');
@@ -226,7 +261,7 @@ function TambahPembelianModal({ onClose, onSuccess }) {
 
             <div className="space-y-3">
               {items.map((item, idx) => (
-                <div key={idx} className="bg-gray-50 rounded-xl p-4">
+                <div key={idx} className={`rounded-xl p-4 ${item.isNew ? 'bg-orange-50 border border-orange-200' : 'bg-gray-50'}`}>
                   <div className="flex gap-2 mb-2">
                     <select
                       value={item.produk_id}
@@ -234,6 +269,7 @@ function TambahPembelianModal({ onClose, onSuccess }) {
                       className="flex-1 border border-gray-300 rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-blue-400 focus:outline-none"
                     >
                       <option value="">-- Pilih Produk --</option>
+                      <option value="__new__">✨ + Produk Baru (belum ada di daftar)</option>
                       {produks.map((p) => (
                         <option key={p.id} value={p.id}>
                           {p.nama_barang} (Stok: {p.stok ?? p.quantity ?? 0})
@@ -249,6 +285,49 @@ function TambahPembelianModal({ onClose, onSuccess }) {
                       </button>
                     )}
                   </div>
+
+                  {/* Form produk baru inline */}
+                  {item.isNew && (
+                    <div className="mb-3 space-y-2 border-t border-orange-200 pt-3">
+                      <p className="text-xs font-semibold text-orange-700">Data Produk Baru (otomatis masuk tabel produk)</p>
+                      <input
+                        type="text"
+                        placeholder="Nama produk *"
+                        value={item.new_produk.nama_barang}
+                        onChange={(e) => updateItem(idx, 'new_produk.nama_barang', e.target.value)}
+                        className="w-full border border-orange-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-orange-400 focus:outline-none"
+                      />
+                      <div className="grid grid-cols-2 gap-2">
+                        <input
+                          type="text"
+                          placeholder="Kode barang (opsional)"
+                          value={item.new_produk.kode_barang}
+                          onChange={(e) => updateItem(idx, 'new_produk.kode_barang', e.target.value)}
+                          className="border border-orange-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-orange-400 focus:outline-none"
+                        />
+                        <select
+                          value={item.new_produk.kategori}
+                          onChange={(e) => updateItem(idx, 'new_produk.kategori', e.target.value)}
+                          className="border border-orange-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-orange-400 focus:outline-none"
+                        >
+                          <option value="">-- Kategori --</option>
+                          <option value="Software">Software</option>
+                          <option value="Hardware">Hardware</option>
+                          <option value="Storage">Storage</option>
+                          <option value="Aksesoris">Aksesoris</option>
+                          <option value="Elektronik">Elektronik</option>
+                        </select>
+                      </div>
+                      <input
+                        type="number"
+                        placeholder="Harga jual produk (Rp)"
+                        value={item.new_produk.harga}
+                        onChange={(e) => updateItem(idx, 'new_produk.harga', e.target.value)}
+                        className="w-full border border-orange-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-orange-400 focus:outline-none"
+                      />
+                    </div>
+                  )}
+
                   <div className="grid grid-cols-2 gap-2">
                     <div>
                       <label className="text-xs text-gray-500 mb-1 block">Qty</label>
@@ -272,7 +351,7 @@ function TambahPembelianModal({ onClose, onSuccess }) {
                       />
                     </div>
                   </div>
-                  {item.produk_id && item.quantity && item.harga_beli && (
+                  {(item.produk_id || item.isNew) && item.quantity && item.harga_beli && (
                     <p className="text-xs text-blue-600 mt-2 font-medium">
                       Subtotal: {formatRupiah(item.quantity * item.harga_beli)}
                     </p>
@@ -315,14 +394,13 @@ function TambahPembelianModal({ onClose, onSuccess }) {
               Batal
             </button>
           </div>
-
         </div>
       </div>
     </div>
   );
 }
 
-// —- Modal: Detail Pembelian ———————————————————————————————————————————
+// ─── Modal: Detail Pembelian ────────────────────────────────────────────────
 function DetailPembelianModal({ pembelian, onClose, onStatusChange }) {
   const [updatingStatus, setUpdatingStatus] = useState(false);
 
@@ -402,7 +480,6 @@ function DetailPembelianModal({ pembelian, onClose, onStatusChange }) {
                     </tr>
                   ))}
                 </tbody>
-                {/* PERBAIKAN 2: Mengubah </footer > menjadi </tfoot> */}
                 <tfoot className="bg-gray-50 border-t-2">
                   <tr>
                     <td colSpan={3} className="px-4 py-3 text-right font-bold">Total</td>
@@ -430,7 +507,7 @@ function DetailPembelianModal({ pembelian, onClose, onStatusChange }) {
                 disabled={updatingStatus}
                 className="flex-1 bg-green-500 hover:bg-green-600 text-white py-3 rounded-2xl font-medium transition disabled:opacity-40"
               >
-                {updatingStatus ? 'Memproses...' : '✓ Tandai Diterima'}
+                {updatingStatus ? 'Memproses...' : '✅ Tandai Diterima'}
               </button>
               <button
                 onClick={() => handleUpdateStatus('dibatalkan')}
@@ -454,7 +531,7 @@ function DetailPembelianModal({ pembelian, onClose, onStatusChange }) {
   );
 }
 
-// —- Main Component: PembelianList ———————————————————————————————————————————
+// ─── Main: PembelianList ────────────────────────────────────────────────────
 function PembelianList() {
   const [pembelians, setPembelians] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -470,7 +547,7 @@ function PembelianList() {
       try {
         const res = await api.get('/user');
         setUser(res.data);
-      } catch (err) {
+      } catch {
         toast.error('Sesi habis, silakan login lagi');
         localStorage.removeItem('token');
         navigate('/login');
@@ -488,7 +565,7 @@ function PembelianList() {
       let data = res.data;
       if (data.data) data = data.data;
       setPembelians(Array.isArray(data) ? data : []);
-    } catch (err) {
+    } catch {
       toast.error('Gagal mengambil data pembelian');
     } finally {
       setLoading(false);
@@ -498,13 +575,13 @@ function PembelianList() {
   const handleLogout = async () => {
     try {
       await api.post('/logout');
-    } catch (err) {}
+    } catch {}
     localStorage.removeItem('token');
     toast.success('Berhasil logout');
     navigate('/login');
   };
 
-  const filteredPembelians = pembelians.filter((p) => {
+  const filtered = pembelians.filter((p) => {
     const matchSearch =
       p.no_pembelian?.toLowerCase().includes(search.toLowerCase()) ||
       p.supplier?.nama?.toLowerCase().includes(search.toLowerCase());
@@ -512,13 +589,12 @@ function PembelianList() {
     return matchSearch && matchStatus;
   });
 
-  const totalNilai = filteredPembelians.reduce((sum, p) => sum + (p.total_harga || 0), 0);
+  const totalNilai = filtered.reduce((sum, p) => sum + (p.total_harga || 0), 0);
 
-  if (loading) {
+  if (loading)
     return (
       <div className="min-h-screen flex items-center justify-center text-xl">Loading...</div>
     );
-  }
 
   return (
     <div className="min-h-screen bg-gray-100">
@@ -526,7 +602,7 @@ function PembelianList() {
       <nav className="bg-white shadow-sm sticky top-0 z-50">
         <div className="max-w-7xl mx-auto px-6 py-4 flex justify-between items-center">
           <h1 className="text-2xl font-bold text-gray-800 flex items-center gap-2">
-            Laravel POS
+            🛒 Laravel POS
           </h1>
           <div className="flex items-center gap-6">
             <span className="text-gray-600">
@@ -549,12 +625,12 @@ function PembelianList() {
           <div>
             <h1 className="text-3xl font-bold text-gray-800">Pembelian</h1>
             <p className="text-gray-600 mt-1">
-              {filteredPembelians.length} transaksi • Total: {formatRupiah(totalNilai)}
+              {filtered.length} transaksi · Total: {formatRupiah(totalNilai)}
             </p>
           </div>
           <button
             onClick={() => setShowTambah(true)}
-            className="px-6 py-3 bg-blue-500 text-white rounded-xl font-medium hover:bg-blue-600 transition"
+            className="px-6 py-3 bg-blue-600 text-white rounded-xl font-medium hover:bg-blue-700 transition"
           >
             + Tambah Pembelian
           </button>
@@ -567,7 +643,7 @@ function PembelianList() {
             placeholder="Cari no. pembelian atau supplier..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="flex-1 px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:outline-none"
+            className="flex-1 md:max-w-md px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:outline-none"
           />
           <select
             value={statusFilter}
@@ -582,7 +658,7 @@ function PembelianList() {
         </div>
 
         {/* Tabel */}
-        {filteredPembelians.length === 0 ? (
+        {filtered.length === 0 ? (
           <div className="bg-white rounded-2xl p-16 text-center shadow">
             <div className="text-6xl mb-4">📦</div>
             <h3 className="text-xl font-semibold text-gray-700 mb-2">Belum ada pembelian</h3>
@@ -591,7 +667,7 @@ function PembelianList() {
               onClick={() => setShowTambah(true)}
               className="px-6 py-3 bg-blue-600 text-white rounded-xl font-medium hover:bg-blue-700 transition"
             >
-              Tambah Pembelian Pertama
+              + Tambah Pembelian Pertama
             </button>
           </div>
         ) : (
@@ -608,7 +684,7 @@ function PembelianList() {
                 </tr>
               </thead>
               <tbody>
-                {filteredPembelians.map((p) => {
+                {filtered.map((p) => {
                   const s = STATUS_LABEL[p.status] || {};
                   return (
                     <tr
